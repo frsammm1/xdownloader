@@ -1,0 +1,22 @@
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file! Do not edit.
+
+.xhamster1.desi	TRUE	/	FALSE	1799798141	cookie_accept_v2	%7B%22e%22%3A1%2C%22f%22%3A1%2C%22t%22%3A1%2C%22a%22%3A1%7D
+.xhamster1.desi	TRUE	/	FALSE	1799797735	ff_thumb_offset	1
+.xhamster1.desi	TRUE	/	FALSE	1768262635	recs_show_time	1768261735
+.xhamster1.desi	TRUE	/	FALSE	1768263535	last_video_search	xhamsters
+.xhamster1.desi	TRUE	/	FALSE	1770853735	search_last_list	%5B%22xhamsters%22%5D
+.xhamster1.desi	TRUE	/	TRUE	1770853753	_cfg	1b05adefa48ee49af9622aa0bed3f695
+.xhamster1.desi	TRUE	/	FALSE	1799798141	parental-control	yes
+.xhamster1.desi	TRUE	/	TRUE	1802822141	_ga	GA1.1.1950062103.1768261739
+.xhamster1.desi	TRUE	/	TRUE	1768348153	stats_src_last	xhamster1.desi
+.xhamster1.desi	TRUE	/	FALSE	1768272553	video_view_count	1
+.xhamster1.desi	TRUE	/	FALSE	1768866553	x_viewes	%5B28430055%5D
+.xhamster1.desi	TRUE	/	FALSE	1770853753	x_content_preference_index	straight
+.xhamster1.desi	TRUE	/	FALSE	1770853759	h_v4_straight	%7B%22v%22%3A%5B%5D%2C%22l%22%3A%5B%5D%2C%22f%22%3A%5B%5D%2C%22pv%22%3A%5B28430055%5D%7D
+.xhamster1.desi	TRUE	/	FALSE	1799798139	settings	eyJpc1dlYnBTdXBwb3J0ZWQiOnRydWUsImlzV2VibVN1cHBvcnRlZCI6dHJ1ZSwiZXh0RGV0ZWN0ZWRWMiI6ZmFsc2UsIm1vbWVudHNJc0hpZGRlbiI6bnVsbCwiZXhwaXJlcyI6eyJleHREZXRlY3RlZFYyIjoxNzY4MjYyMTM5fSwidHNTcG90Q291bnRlcnMiOlt7InNwb3QiOiJtYXN0ZXJfbW9iaWxlX2hlYWRlciIsInRpbWUiOjE3NjgyNjE3MzUsImNvdW50IjoyfSx7InNwb3QiOiJtYXN0ZXJfbW9iaWxlX21pZGRsZSIsInRpbWUiOjE3NjgyNjE3MzUsImNvdW50IjoyfSx7InNwb3QiOiJtYXN0ZXJfbW9iaWxlX2Zvb3RlciIsInRpbWUiOjE3NjgyNjE3MzUsImNvdW50IjoyfV19
+.xhamster1.desi	TRUE	/	TRUE	1802822141	_ga_M59JX8S6QE	GS2.1.s1768261739$o1$g1$t1768262140$j60$l0$h722252623
+.xhamster1.desi	TRUE	/	FALSE	0	X-CSRF-TOKEN	6H8ZuiuzpSZAxY5M2ccnVqMoSsCzeDb-
+xhamster1.desi	FALSE	/	TRUE	1783814145	g_state	{"i_l":0,"i_ll":1768262145070,"i_b":"rOxtOzO09cryLRE5D31tobFF8MfCR3Gg2zQo+HjPNIg","i_e":{"enable_itp_optimization":0}}
+  
