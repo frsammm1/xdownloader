@@ -2,3 +2,5 @@ pyrogram==2.0.106
 tgcrypto==1.2.5
 yt-dlp>=2024.03.10
 hachoir
+beautifulsoup4
+requests
