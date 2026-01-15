@@ -1,0 +1,27 @@
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file! Do not edit.
+
+.pornhub.com	TRUE	/	TRUE	1768581411	ua	b0dedf412bb9745a2997fcb10459260d
+.pornhub.com	TRUE	/	TRUE	1769099811	platform	tablet
+.pornhub.com	TRUE	/	TRUE	1800031011	bs	0000000000000000baeef98636c9d19d
+.pornhub.com	TRUE	/	TRUE	1800031011	bsdd	0000000000000000baeef98636c9d19d
+.pornhub.com	TRUE	/	TRUE	1800031011	ss	749039496045518551
+.pornhub.com	TRUE	/	TRUE	1800031011	sessid	893473679121763698
+.pornhub.com	TRUE	/	TRUE	1771087011	comp_detect-cookies	72274.100000
+.pornhub.com	TRUE	/	TRUE	1771087011	fg_afaf12e314c5419a855ddc0bf120670f	98731.100000
+.pornhub.com	TRUE	/	TRUE	1771087011	fg_55e3b6f0afd46366d6fa797544b15af2	68722.100000
+.pornhub.com	TRUE	/	TRUE	1771087011	fg_7d31324eedb583147b6dcbea0051c868	50649.100000
+.pornhub.com	TRUE	/	TRUE	0	__s	696917A2-42FE722901BB39E388-FE1DC18
+.pornhub.com	TRUE	/	TRUE	1800051937	__l	696917A2-42FE722901BB39E388-FE1DC18
+.www.pornhub.com	TRUE	/	TRUE	1771087014	tj_UUID_v2	ChCqgPfwuShA2ptleDAtbSr4EgwIpa-kywYQguXSzQMYAyoMCKWvpMsGENeM2c8DMgb3iICA4FU6Cd-u9de24JSrYQ==
+.www.pornhub.com	TRUE	/	TRUE	1771087015	tj_UUID	ChCqgPfwuShA2ptleDAtbSr4EgwIpa-kywYQguXSzQMYAyoMCKavpMsGEPK4lPgCMgb3iICA4FU6Cd-u9de24JSrYQ==
+.pornhub.com	TRUE	/	FALSE	0	d_fs	1
+.pornhub.com	TRUE	/	FALSE	1803055017	_ga_B39RFFWGYY	GS2.1.s1768495017$o1$g0$t1768495017$j60$l0$h0
+.pornhub.com	TRUE	/	FALSE	1803055017	_ga	GA1.1.1426888908.1768495017
+.www.pornhub.com	TRUE	/	FALSE	1800031019	d_uidb	c14eb579-9a57-a0f0-0a29-05794f603878
+.pornhub.com	TRUE	/	FALSE	1771087019	d_uid	c14eb579-9a57-a0f0-0a29-05794f603878
+.pornhub.com	TRUE	/	FALSE	1771087019	d_uidb	c14eb579-9a57-a0f0-0a29-05794f603878
+.pornhub.com	TRUE	/	FALSE	1768498621	accessAgeDisclaimerPH	2
+www.pornhub.com	FALSE	/	FALSE	0	rp	516081843:MGlP5BKvc5M=
+.pornhub.com	TRUE	/	TRUE	1800031013	cookieConsent	3
