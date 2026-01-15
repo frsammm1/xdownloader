@@ -4,37 +4,35 @@ import logging
 import asyncio
 import shutil
 
-# --- FIX FOR PYTHON 3.10+ CRASH (VERY IMPORTANT) ---
-# Ye code start hone se pehle Event Loop create karega
+# --- FIX FOR PYTHON 3.10+ CRASH (MANDATORY) ---
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
-# ---------------------------------------------------
+# ----------------------------------------------
 
 from pyrogram import Client, filters
 import yt_dlp
 
-# --- CONFIGURATION (Heroku Config Vars) ---
+# --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 12345))
 API_HASH = os.environ.get("API_HASH", "YOUR_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN")
 
-# Logging setup
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- PROGRESS BAR FUNCTION ---
+# --- PROGRESS BAR ---
 async def progress(current, total, message):
     try:
         now = time.time()
-        # Progress bar state maintain karne ke liye
         if 'last_update_time' not in progress.__dict__:
             progress.last_update_time = 0
         
-        # 5 second ka gap taaki FloodWait na aaye
+        # 5 sec delay to avoid floodwait
         if now - progress.last_update_time < 5 and current != total:
             return
 
@@ -59,23 +57,20 @@ async def progress(current, total, message):
     except Exception:
         pass
 
-# --- START COMMAND ---
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("👋 **Bot Online!**\nSend me any xHamster link to download.")
+    await message.reply_text("👋 **Bot Online!**\nSend me the xHamster link.")
 
-# --- DOWNLOAD LOGIC ---
 @app.on_message(filters.text & ~filters.command("start"))
 async def download_handler(client, message):
     url = message.text.strip()
     
-    # Check if text is a link
     if not url.startswith(("http", "www")):
         return 
 
-    status_msg = await message.reply_text("🔎 **Analyzing Link...**")
+    status_msg = await message.reply_text("🔎 **Analyzing Link...**\n(Updating extractors if needed...)")
     
-    # Create unique folder for each task
+    # Unique Folder
     timestamp = int(time.time())
     download_path = f"downloads/{timestamp}"
     if not os.path.exists(download_path):
@@ -83,33 +78,48 @@ async def download_handler(client, message):
 
     out_tmpl = f'{download_path}/%(title)s.%(ext)s'
 
-    # yt-dlp Configuration
+    # UPDATED User-Agent and Options
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': out_tmpl,
-        'cookiefile': 'cookies.txt', # Cookies ka use karega
+        'cookiefile': 'cookies.txt', 
         'writethumbnail': True,
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
+        # Updated User Agent (Chrome 120) to look like a real PC
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        # Agar specific extractor fail ho, to generic try kare
+        'ignoreerrors': True, 
     }
 
     filename = None
     thumb_path = None
 
     try:
-        # Step 1: Check Metadata & Size
+        # Step 1: Info & Size Check
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             await status_msg.edit_text("⏳ **Fetching Info...**")
-            info = ydl.extract_info(url, download=False)
             
-            # 2GB Limit Check (Telegram Limit)
+            try:
+                info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                # Agar extraction fail ho, to error print kare
+                await status_msg.edit_text(f"❌ **Extraction Failed:**\n`{str(e)}`\n\nTry checking the link.")
+                shutil.rmtree(download_path, ignore_errors=True)
+                return
+
+            # Check if info is None
+            if not info:
+                await status_msg.edit_text("❌ **Error:** Video not found or link invalid.")
+                shutil.rmtree(download_path, ignore_errors=True)
+                return
+
+            # 2GB Limit Check
             filesize = info.get('filesize') or info.get('filesize_approx')
             if filesize and filesize > 2000000000:
-                await status_msg.edit_text(f"❌ **File too big!**\nSize > 2GB. Cannot upload.")
-                # Cleanup folder
+                await status_msg.edit_text(f"❌ **File > 2GB.** Cannot upload on Telegram.")
                 shutil.rmtree(download_path, ignore_errors=True)
                 return
 
@@ -117,17 +127,27 @@ async def download_handler(client, message):
             duration = info.get('duration', 0)
             
             # Step 2: Download
-            await status_msg.edit_text(f"⬇️ **Downloading:** `{title}`\nPlease wait...")
+            await status_msg.edit_text(f"⬇️ **Downloading:** `{title}`")
             error_code = ydl.download([url])
             
-            if error_code != 0:
-                raise Exception("Download failed.")
-
-            # Get actual filename
+            # Re-verify file existence
             info = ydl.extract_info(url, download=False)
             filename = ydl.prepare_filename(info)
             
-            # Find Thumbnail
+            if not os.path.exists(filename):
+                # Kabhi kabhi format change hone par extension badal jati hai
+                # Check for any file in folder
+                files = os.listdir(download_path)
+                if files:
+                    for f in files:
+                        if f.endswith(('.mp4', '.mkv', '.webm')):
+                            filename = os.path.join(download_path, f)
+                            break
+            
+            if not filename or not os.path.exists(filename):
+                 raise Exception("File not downloaded.")
+
+            # Thumbnail
             base_name = filename.rsplit(".", 1)[0]
             if os.path.exists(base_name + ".webp"):
                 thumb_path = base_name + ".webp"
@@ -141,13 +161,13 @@ async def download_handler(client, message):
 
     # Step 3: Upload
     try:
-        await status_msg.edit_text("📤 **Uploading to Telegram...**")
+        await status_msg.edit_text("📤 **Uploading...**")
         progress.start_time = time.time()
         
         await client.send_video(
             chat_id=message.chat.id,
             video=filename,
-            caption=f"🎥 **{title}**\n✅ Downloaded via Bot",
+            caption=f"🎥 **{title}**",
             duration=duration,
             thumb=thumb_path,
             supports_streaming=True,
@@ -157,15 +177,11 @@ async def download_handler(client, message):
         await status_msg.delete()
 
     except Exception as e:
-        await status_msg.edit_text(f"❌ **Upload Failed:** {str(e)}")
+        await status_msg.edit_text(f"❌ **Upload Error:** {str(e)}")
 
     finally:
-        # Step 4: Cleanup (Delete folder)
         if os.path.exists(download_path):
             shutil.rmtree(download_path, ignore_errors=True)
 
-# --- ENTRY POINT (Ye bot ko start rakhega) ---
 if __name__ == "__main__":
-    print("Bot Started Successfully!")
     app.run()
-        
