@@ -3,6 +3,7 @@ import time
 import logging
 import asyncio
 import shutil
+import random
 
 # --- FIX FOR PYTHON 3.10+ CRASH ---
 try:
@@ -12,28 +13,80 @@ except RuntimeError:
 # ----------------------------------
 
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
 import yt_dlp
 
 # --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 12345))
 API_HASH = os.environ.get("API_HASH", "YOUR_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+CREDIT_USERNAME = os.environ.get("CREDIT_USERNAME", "@fr_sammm11")
+LOG_CHANNEL_ID = int(os.environ.get("LOG_CHANNEL_ID", -1003676470398))
+FORCE_CHANNEL_ID = int(os.environ.get("FORCE_CHANNEL_ID", -1003598486419))
+FORCE_CHANNEL_INVITE_LINK = os.environ.get("FORCE_CHANNEL_INVITE_LINK", "https://t.me/+b8mBsLIN329hYTVl")
 
 logging.basicConfig(level=logging.INFO)
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# --- IN-MEMORY DATA STORE ---
+# Users structure: { user_id: { "joined": bool, "shared": bool, "uploads": int, "name": str } }
+users_db = {}
+# Ongoing tasks: { user_id: [task_id, ...] }
+ongoing_tasks = {}
+
+INTERESTING_MESSAGES = [
+    "🔥 Fetching that hot video for you...",
+    "🍑 Hold tight, extracting the goods...",
+    "😏 Just a moment, making it ready...",
+    "🚀 Launching the download rocket...",
+    "💥 Boom! Found it. Processing now...",
+    "✨ Magic in progress... Wait for it!",
+    "👀 Oh yeah, this one looks good...",
+    "🕵️‍♂️ Investigating the link... Found it!",
+    "🥂 Cheers! Downloading your request...",
+    "💃 Dancing through the servers...",
+    "🐱‍👤 Ninja mode activated. Downloading...",
+    "🌟 Shining bright! Almost there...",
+    "🎉 Party time soon! Downloading...",
+    "💎 A hidden gem? Let's see...",
+    "🔥 Hot stuff coming through!"
+]
+
 # --- PROGRESS BAR ---
+# Dictionary to store progress state: { message_id: { 'last_update_time': float, 'last_current': int } }
+progress_state = {}
+
 async def progress(current, total, message):
     try:
         now = time.time()
-        if 'last_update_time' not in progress.__dict__:
-            progress.last_update_time = 0
+        msg_id = message.id
+
+        # Initialize state for this specific message if not exists
+        if msg_id not in progress_state:
+            progress_state[msg_id] = {
+                'last_update_time': 0,
+                'last_current': 0,
+                'start_time': now
+            }
         
-        if now - progress.last_update_time < 5 and current != total:
+        state = progress_state[msg_id]
+
+        # Update every 6-7 seconds (using 6.5s)
+        if now - state['last_update_time'] < 6.5 and current != total:
             return
 
-        progress.last_update_time = now
+        time_diff = now - state['last_update_time']
+        if time_diff == 0: time_diff = 1 # avoid division by zero
+
+        # Calculate speed (bytes per second)
+        speed = (current - state['last_current']) / time_diff
+
+        # Update state
+        state['last_current'] = current
+        state['last_update_time'] = now
+
         percentage = current * 100 / total
         
         def humanbytes(b):
@@ -46,26 +99,194 @@ async def progress(current, total, message):
                 n += 1
             return str(round(b, 2)) + " " + dic_powerN[n] + 'B'
 
+        speed_text = humanbytes(speed)
+
         text = f"**🚀 Uploading...**\n"
-        text += f"📊 Progress: {round(percentage, 2)}%\n"
-        text += f"📦 Size: {humanbytes(current)} / {humanbytes(total)}"
+        text += f"📊 **Progress:** {round(percentage, 2)}%\n"
+        text += f"📦 **Size:** {humanbytes(current)} / {humanbytes(total)}\n"
+        text += f"⚡ **Speed:** {speed_text}/s"
         
         await message.edit_text(text)
+
+        # Cleanup when done
+        if current == total:
+            if msg_id in progress_state:
+                del progress_state[msg_id]
+
     except Exception:
         pass
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("👋 **Bot Online!**\nSend xHamster link.")
+    user_id = message.from_user.id
+    username = message.from_user.username
+    first_name = message.from_user.first_name
+
+    # Register user in DB if not exists
+    if user_id not in users_db:
+        users_db[user_id] = {"joined": False, "shared": False, "uploads": 0, "name": first_name or username}
+
+    # Force Join Check
+    try:
+        # Check if user is already a member
+        member = await client.get_chat_member(FORCE_CHANNEL_ID, user_id)
+        if member.status in ["member", "administrator", "creator"]:
+             users_db[user_id]["joined"] = True
+    except Exception:
+         # If get_chat_member fails, it usually means user is not a member or bot is not admin.
+         # We assume they are NOT joined.
+         pass
+
+    if not users_db[user_id]["joined"]:
+        # Show Force Join Button
+        await message.reply_text(
+            "🛑 **Access Denied!**\n\n"
+            "You must join our Backup Channel to use this bot.\n"
+            "Click the button below to send a **Join Request**. "
+            "Once you send the request, the bot will unlock immediately!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Join Backup Channel", url=FORCE_CHANNEL_INVITE_LINK)]
+            ])
+        )
+        return
+
+    # Share Check
+    if not users_db[user_id].get("shared", False):
+         share_text = f"https://t.me/{client.me.username}?start=ref_{user_id}"
+         await message.reply_text(
+            "🔓 **One Last Step!**\n\n"
+            "Please share this bot with at least 2 friends or groups to unlock unlimited access.\n"
+            "We trust you! Click 'I have Shared' once done.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📤 Share Bot", url=f"https://t.me/share/url?url={share_text}")],
+                [InlineKeyboardButton("✅ I have Shared", callback_data="shared_done")]
+            ])
+        )
+         return
+
+    await message.reply_text(
+        "👋 **Welcome Back!**\n\n"
+        "✅ **You have unlimited access.**\n"
+        "🔗 **Supported Sites:** xHamster & Pornhub.\n\n"
+        "👇 Send me a link to start downloading!"
+    )
+
+@app.on_callback_query(filters.regex("shared_done"))
+async def shared_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    if user_id in users_db:
+        users_db[user_id]["shared"] = True
+        await callback_query.message.edit_text(
+            "🎉 **Thank you!**\n\n"
+            "✅ You now have **unlimited access**!\n"
+            "👇 Send me a link to start downloading."
+        )
+    else:
+        await callback_query.answer("⚠️ Please /start first.")
+
+@app.on_chat_join_request(filters.chat(FORCE_CHANNEL_ID))
+async def approve_join_request(client, message: ChatJoinRequest):
+    user_id = message.from_user.id
+    # Automatically approve the request
+    try:
+        await client.approve_chat_join_request(chat_id=message.chat.id, user_id=user_id)
+        # Mark as joined in our DB
+        if user_id not in users_db:
+             users_db[user_id] = {
+                 "joined": True,
+                 "shared": False,
+                 "uploads": 0,
+                 "name": message.from_user.first_name or message.from_user.username
+             }
+        else:
+            users_db[user_id]["joined"] = True
+
+        # Notify user
+        await client.send_message(
+            chat_id=user_id,
+            text="✅ **Join Request Approved!**\n\n You can now use the bot. Type /start to proceed."
+        )
+    except Exception as e:
+        print(f"Error approving join request: {e}")
+
+@app.on_message(filters.command("admin"))
+async def admin_panel(client, message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    text = "👮‍♂️ **Admin Panel**\n\n"
+    text += f"👥 **Active Users:** {len(users_db)}\n"
+    text += f"📥 **Active Downloads:** {sum(len(v) for v in ongoing_tasks.values())}\n\n"
+
+    # List Users (Top 20 by recency/simple iteration)
+    text += "**📋 User List:**\n"
+    for uid, data in list(users_db.items())[:20]:
+         text += f"👤 [{data['name']}](tg://user?id={uid}) - 📤 {data.get('uploads', 0)} uploads\n"
+
+    await message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+             [InlineKeyboardButton("📊 View Active Downloads", callback_data="admin_downloads")]
+        ])
+    )
+
+@app.on_callback_query(filters.regex("admin_downloads"))
+async def admin_downloads_callback(client, callback_query):
+    if callback_query.from_user.id != ADMIN_ID:
+        return
+
+    text = "📥 **Active Downloads**\n\n"
+    count = 0
+    for uid, tasks in ongoing_tasks.items():
+        if tasks:
+             user_name = users_db.get(uid, {}).get('name', 'Unknown')
+             text += f"👤 **{user_name}:** {len(tasks)} tasks\n"
+             count += 1
+
+    if count == 0:
+        text += "✅ No active downloads."
+
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+             [InlineKeyboardButton("🔙 Back to Panel", callback_data="admin_back")]
+        ])
+    )
+
+@app.on_callback_query(filters.regex("admin_back"))
+async def admin_back_callback(client, callback_query):
+    if callback_query.from_user.id != ADMIN_ID:
+        return
+
+    # Re-trigger admin panel logic simply
+    text = "👮‍♂️ **Admin Panel**\n\n"
+    text += f"👥 **Active Users:** {len(users_db)}\n"
+    text += f"📥 **Active Downloads:** {sum(len(v) for v in ongoing_tasks.values())}\n\n"
+
+    text += "**📋 User List:**\n"
+    for uid, data in list(users_db.items())[:20]:
+         text += f"👤 [{data['name']}](tg://user?id={uid}) - 📤 {data.get('uploads', 0)} uploads\n"
+
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+             [InlineKeyboardButton("📊 View Active Downloads", callback_data="admin_downloads")]
+        ])
+    )
 
 # --- HELPER FUNCTION TO DOWNLOAD ---
 def run_download(url, path, generic_mode=False):
     out_tmpl = f'{path}/%(title)s.%(ext)s'
     
+    # Select Cookie File
+    cookie_file = 'cookies.txt'
+    if 'pornhub' in url.lower():
+        cookie_file = 'www.pornhub.com_cookies.txt'
+
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': out_tmpl,
-        'cookiefile': 'cookies.txt', 
+        'cookiefile': cookie_file,
         'writethumbnail': True,
         'noplaylist': True,
         'quiet': True,
@@ -86,11 +307,35 @@ def run_download(url, path, generic_mode=False):
 @app.on_message(filters.text & ~filters.command("start"))
 async def download_handler(client, message):
     url = message.text.strip()
+    user_id = message.from_user.id
     
     if not url.startswith(("http", "www")):
         return 
 
-    status_msg = await message.reply_text("🔎 **Checking Link...**")
+    # --- ACCESS CONTROL CHECK ---
+    # Since DB is in-memory, if user is not found, we treat them as new/unverified.
+    # They must have 'joined' and 'shared' set to True.
+    if user_id not in users_db or not users_db[user_id].get("joined") or not users_db[user_id].get("shared"):
+        await message.reply_text(
+            "⚠️ **Access Denied!**\n\n"
+            "Please use /start to verify your access."
+        )
+        return
+
+    # Concurrency Check
+    if user_id not in ongoing_tasks:
+        ongoing_tasks[user_id] = []
+
+    if len(ongoing_tasks[user_id]) >= 5:
+        await message.reply_text("⚠️ **Wait!** You have 5 active downloads. Please wait for them to finish.")
+        return
+
+    # Add task
+    task_id = time.time()
+    ongoing_tasks[user_id].append(task_id)
+
+    random_msg = random.choice(INTERESTING_MESSAGES)
+    status_msg = await message.reply_text(f"🔎 **{random_msg}**")
     
     timestamp = int(time.time())
     download_path = f"downloads/{timestamp}"
@@ -104,7 +349,7 @@ async def download_handler(client, message):
 
     try:
         # ATTEMPT 1: Normal Download
-        await status_msg.edit_text("⏳ **Trying Method 1 (Standard)...**")
+        await status_msg.edit_text(f"⏳ **{random.choice(INTERESTING_MESSAGES)}**")
         info, filename = await asyncio.to_thread(run_download, url, download_path, False)
         
         title = info.get('title', 'Video')
@@ -150,22 +395,44 @@ async def download_handler(client, message):
         shutil.rmtree(download_path, ignore_errors=True)
         return
 
-    # Thumbnail Finding
+    # Thumbnail Finding & Conversion
     base_name = filename.rsplit(".", 1)[0]
-    if os.path.exists(base_name + ".webp"):
-        thumb_path = base_name + ".webp"
-    elif os.path.exists(base_name + ".jpg"):
-        thumb_path = base_name + ".jpg"
+    thumb_path = None
+    possible_exts = [".jpg", ".jpeg", ".png", ".webp"]
+    for ext in possible_exts:
+        if os.path.exists(base_name + ext):
+            thumb_path = base_name + ext
+            break
+
+    # Attempt to convert webp to jpg if that's what we found (Pyrogram likes JPG)
+    if thumb_path and thumb_path.endswith(".webp"):
+        try:
+             new_thumb = base_name + ".jpg"
+             # Use ffmpeg to convert safely avoiding shell injection
+             process = await asyncio.create_subprocess_exec(
+                 "ffmpeg", "-i", thumb_path, new_thumb, "-y", "-hide_banner", "-loglevel", "error"
+             )
+             await process.wait()
+
+             if os.path.exists(new_thumb):
+                 thumb_path = new_thumb
+        except Exception as e:
+            print(f"Thumb convert error: {e}")
 
     # --- UPLOAD ---
     try:
         await status_msg.edit_text("📤 **Uploading...**")
         progress.start_time = time.time()
         
-        await client.send_video(
+        # Caption with credit and downloaded by tag
+        caption_text = f"🎥 **{title}**\n\n"
+        caption_text += f"👤 **Developer:** {CREDIT_USERNAME}\n"
+        caption_text += f"📥 **Downloaded by:** @{client.me.username}"
+
+        sent_msg = await client.send_video(
             chat_id=message.chat.id,
             video=filename,
-            caption=f"🎥 **{title}**",
+            caption=caption_text,
             duration=duration,
             thumb=thumb_path,
             supports_streaming=True,
@@ -174,12 +441,29 @@ async def download_handler(client, message):
         )
         await status_msg.delete()
 
+        # Track Upload Count
+        if user_id in users_db:
+             users_db[user_id]["uploads"] = users_db[user_id].get("uploads", 0) + 1
+
+        # Forward to Log Channel (Without Re-uploading)
+        try:
+             await client.send_video(
+                 chat_id=LOG_CHANNEL_ID,
+                 video=sent_msg.video.file_id,
+                 caption=f"📝 **Log: New Upload**\n\n👤 User: {message.from_user.mention}\n🆔 ID: `{user_id}`\n🎥 Video: {title}",
+             )
+        except Exception as e_log:
+             print(f"Log Channel Error: {e_log}")
+
     except Exception as e:
         await status_msg.edit_text(f"❌ **Upload Error:** {str(e)}")
 
     finally:
         if os.path.exists(download_path):
             shutil.rmtree(download_path, ignore_errors=True)
+        # Remove task
+        if user_id in ongoing_tasks and task_id in ongoing_tasks[user_id]:
+            ongoing_tasks[user_id].remove(task_id)
 
 if __name__ == "__main__":
     app.run()
