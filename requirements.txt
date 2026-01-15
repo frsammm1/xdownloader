@@ -1,5 +1,4 @@
 pyrogram==2.0.106
 tgcrypto==1.2.5
-yt-dlp
-tgcrypto
-yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@master
+yt-dlp>=2024.03.10
+hachoir
