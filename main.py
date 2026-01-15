@@ -5,6 +5,9 @@ import asyncio
 import shutil
 import random
 import glob
+import subprocess
+import requests
+from bs4 import BeautifulSoup
 
 # --- FIX FOR PYTHON 3.10+ CRASH ---
 try:
@@ -52,6 +55,42 @@ INTERESTING_MESSAGES = [
     "💎 A hidden gem? Let's see...",
     "🔥 Hot stuff coming through!"
 ]
+
+# --- HELPER FUNCTIONS ---
+
+def fallback_scraper(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # 1. Search for video tag with src
+            video_tag = soup.find('video')
+            if video_tag and video_tag.get('src'):
+                return video_tag.get('src')
+
+            # 2. Search for source tag inside video
+            source_tag = soup.find('source', type=lambda t: t and ('mp4' in t or 'webm' in t or 'mkv' in t))
+            if source_tag and source_tag.get('src'):
+                return source_tag.get('src')
+
+            # 3. Regex/Substring fallback for direct links in scripts (simplified)
+            # This is basic; complex sites need more regex.
+    except Exception as e:
+        print(f"Scraper Error: {e}")
+    return None
+
+def get_duration_ffmpeg(filepath):
+    try:
+        result = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            stderr=subprocess.STDOUT
+        )
+        return int(float(result.strip()))
+    except Exception as e:
+        print(f"Duration Error: {e}")
+        return 0
 
 # --- UPLOAD PROGRESS BAR ---
 progress_state = {}
@@ -193,37 +232,25 @@ async def start_command(client, message):
 @app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status(client, callback_query):
     user_id = callback_query.from_user.id
-    try:
-        member = await client.get_chat_member(FORCE_CHANNEL_ID, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            if user_id in users_db:
-                users_db[user_id]["joined"] = True
-            else:
-                 users_db[user_id] = {"joined": True, "shared": False, "uploads": 0, "name": callback_query.from_user.first_name}
+    # BLIND TRUST: Immediately verify the user
+    if user_id in users_db:
+        users_db[user_id]["joined"] = True
+    else:
+        users_db[user_id] = {"joined": True, "shared": False, "uploads": 0, "name": callback_query.from_user.first_name}
 
-            # Delete the "Access Denied" message
-            await callback_query.message.delete()
+    await callback_query.message.delete()
 
-            # Proceed to next step (Share Check)
-            # We call check_user_access again. It will now pass the "joined" check and show the "Share" prompt.
-            # We send a fresh message for the share prompt.
-            if await check_user_access(client, callback_query.message, user_id, callback_query.from_user.first_name):
-                await show_main_menu(client, callback_query.message.chat.id, user_id)
-        else:
-            await callback_query.answer("❌ You haven't joined the channel yet!", show_alert=True)
-    except Exception as e:
-        print(f"Join Check Error: {e}")
-        await callback_query.answer("❌ Could not verify. Try again.", show_alert=True)
+    # Proceed to next step (Share Check)
+    if await check_user_access(client, callback_query.message, user_id, callback_query.from_user.first_name):
+        await show_main_menu(client, callback_query.message.chat.id, user_id)
 
 
 @app.on_callback_query(filters.regex("shared_done"))
 async def shared_callback(client, callback_query):
     user_id = callback_query.from_user.id
 
-    # Update state
-    if user_id == ADMIN_ID:
-        users_db[user_id]["shared"] = True
-    elif user_id in users_db:
+    # Update state - BLIND TRUST
+    if user_id in users_db:
         users_db[user_id]["shared"] = True
     else:
         # Edge case: restart happened, user in verify flow. Re-init.
@@ -437,17 +464,34 @@ async def download_handler(client, message):
     try:
         ongoing_tasks[user_id][task_id]['title'] = "Downloading Video..."
         try:
+            # 1. Standard yt-dlp
             info, filename = await asyncio.to_thread(run_download, url, download_path, ongoing_tasks[user_id][task_id], False)
         except Exception as e:
             print(f"Method 1 Failed: {e}")
-            await status_msg.edit_text("🔄 **Method 1 failed. Trying Generic Mode...**")
-            info, filename = await asyncio.to_thread(run_download, url, download_path, ongoing_tasks[user_id][task_id], True)
+            try:
+                # 2. Generic yt-dlp
+                await status_msg.edit_text("🔄 **Method 1 failed. Trying Generic Mode...**")
+                info, filename = await asyncio.to_thread(run_download, url, download_path, ongoing_tasks[user_id][task_id], True)
+            except Exception as e2:
+                 print(f"Method 2 Failed: {e2}")
+                 # 3. Fallback Scraper
+                 await status_msg.edit_text("🔄 **Trying Fallback Scraper...**")
+                 direct_link = await asyncio.to_thread(fallback_scraper, url)
+                 if direct_link:
+                     await status_msg.edit_text("✅ **Link Found! Downloading...**")
+                     info, filename = await asyncio.to_thread(run_download, direct_link, download_path, ongoing_tasks[user_id][task_id], True)
+                 else:
+                     raise Exception("All download methods failed.")
 
         monitor_running = False
         monitor_task.cancel()
 
         title = info.get('title', 'Video')
         duration = info.get('duration', 0)
+
+        # Duration Fix
+        if not duration and filename and os.path.exists(filename):
+            duration = get_duration_ffmpeg(filename)
         ongoing_tasks[user_id][task_id]['title'] = title
         ongoing_tasks[user_id][task_id]['status'] = "Processing"
 
@@ -524,10 +568,20 @@ async def start_bot():
 
     # --- LOG CHANNEL FIX: WARM UP PEER ---
     try:
-        print("Pinging Log Channel to cache peer...")
+        print(f"Pinging Log Channel ({LOG_CHANNEL_ID}) to cache peer...")
+
+        # 1. Try resolving peer first
+        try:
+             await app.get_chat(LOG_CHANNEL_ID)
+             print("Log Channel Resolved.")
+        except Exception as e_resolve:
+             print(f"Could not resolve log channel: {e_resolve}")
+
+        # 2. Try sending a message
         msg = await app.send_message(LOG_CHANNEL_ID, ".")
         await msg.delete()
         print("Log Channel Ping Successful.")
+
     except Exception as e:
         print(f"Log Channel Ping Failed: {e}")
         # Note: If this fails, the bot might not be admin or the ID is wrong.
