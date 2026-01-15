@@ -19,6 +19,7 @@ except RuntimeError:
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
 import yt_dlp
+from database import add_user, get_user, update_user_verification, get_all_users, increment_upload_count
 
 # --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 12345))
@@ -34,9 +35,10 @@ logging.basicConfig(level=logging.INFO)
 
 app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- IN-MEMORY DATA STORE ---
-users_db = {}
+# --- GLOBAL STATE ---
 ongoing_tasks = {}
+BOT_IS_AWAKE = False  # Default to Sleep on restart
+BROADCAST_WAIT_MODE = False # Admin broadcast state
 
 INTERESTING_MESSAGES = [
     "🔥 Fetching that hot video for you...",
@@ -58,25 +60,42 @@ INTERESTING_MESSAGES = [
 
 # --- HELPER FUNCTIONS ---
 
+import re
+
 def fallback_scraper(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
+            content = response.text
+            soup = BeautifulSoup(content, 'html.parser')
 
-            # 1. Search for video tag with src
+            # 1. Check for .m3u8 (HLS) in text
+            m3u8_match = re.search(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', content)
+            if m3u8_match:
+                return m3u8_match.group(0)
+
+            # 2. Search for video tag with src
             video_tag = soup.find('video')
             if video_tag and video_tag.get('src'):
                 return video_tag.get('src')
 
-            # 2. Search for source tag inside video
+            # 3. Search for source tag inside video
             source_tag = soup.find('source', type=lambda t: t and ('mp4' in t or 'webm' in t or 'mkv' in t))
             if source_tag and source_tag.get('src'):
                 return source_tag.get('src')
 
-            # 3. Regex/Substring fallback for direct links in scripts (simplified)
-            # This is basic; complex sites need more regex.
+            # 4. Check for direct MP4 links in regex
+            mp4_match = re.search(r'https?://[^\s"\'<>]+\.mp4[^\s"\'<>]*', content)
+            if mp4_match:
+                return mp4_match.group(0)
+
+            # 5. Iframe fallback (Look for embed URL)
+            iframe = soup.find('iframe')
+            if iframe and iframe.get('src'):
+                # Return iframe src to be fed back into yt-dlp (it handles many embeds)
+                return iframe.get('src')
+
     except Exception as e:
         print(f"Scraper Error: {e}")
     return None
@@ -174,25 +193,28 @@ async def check_user_access(client, message, user_id, user_name):
     # Initializes user in DB and performs checks.
     # Returns True if access granted, False if prompt sent.
 
-    if user_id not in users_db:
-        users_db[user_id] = {"joined": False, "shared": False, "uploads": 0, "name": user_name}
+    # Sync with MongoDB
+    await add_user(user_id, user_name)
+    user_data = await get_user(user_id)
+    if not user_data:
+         # Should not happen after add_user
+         return False
 
     # ADMIN BYPASS
     if user_id == ADMIN_ID:
-        users_db[user_id]["joined"] = True
-        users_db[user_id]["shared"] = True
         return True
 
     # Force Join Check
-    if not users_db[user_id]["joined"]:
+    if not user_data.get("joined"):
         try:
             member = await client.get_chat_member(FORCE_CHANNEL_ID, user_id)
             if member.status in ["member", "administrator", "creator"]:
-                 users_db[user_id]["joined"] = True
+                 await update_user_verification(user_id, joined=True)
+                 user_data['joined'] = True
         except Exception:
              pass
 
-    if not users_db[user_id]["joined"]:
+    if not user_data.get("joined"):
         await message.reply_text(
             "🛑 **Access Denied!**\n\n"
             "You must join our Backup Channel to use this bot.\n"
@@ -205,7 +227,7 @@ async def check_user_access(client, message, user_id, user_name):
         return False
 
     # Share Check
-    if not users_db[user_id].get("shared", False):
+    if not user_data.get("shared", False):
          share_text = f"https://t.me/{client.me.username}?start=ref_{user_id}"
          await message.reply_text(
             "🔓 **One Last Step!**\n\n"
@@ -226,6 +248,18 @@ async def start_command(client, message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or "User"
 
+    # SLEEP CHECK
+    if not BOT_IS_AWAKE and user_id != ADMIN_ID:
+        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
+        await message.reply_text(
+            "😴 **Bot is sleeping? No problem**\n\n"
+            "The bot is currently resting. Click the button below to wake it up!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
+            ])
+        )
+        return
+
     if await check_user_access(client, message, user_id, first_name):
         await show_main_menu(client, message.chat.id, user_id)
 
@@ -233,10 +267,8 @@ async def start_command(client, message):
 async def check_join_status(client, callback_query):
     user_id = callback_query.from_user.id
     # BLIND TRUST: Immediately verify the user
-    if user_id in users_db:
-        users_db[user_id]["joined"] = True
-    else:
-        users_db[user_id] = {"joined": True, "shared": False, "uploads": 0, "name": callback_query.from_user.first_name}
+    await add_user(user_id, callback_query.from_user.first_name)
+    await update_user_verification(user_id, joined=True)
 
     await callback_query.message.delete()
 
@@ -250,11 +282,8 @@ async def shared_callback(client, callback_query):
     user_id = callback_query.from_user.id
 
     # Update state - BLIND TRUST
-    if user_id in users_db:
-        users_db[user_id]["shared"] = True
-    else:
-        # Edge case: restart happened, user in verify flow. Re-init.
-        users_db[user_id] = {"joined": True, "shared": True, "uploads": 0, "name": callback_query.from_user.first_name}
+    await add_user(user_id, callback_query.from_user.first_name)
+    await update_user_verification(user_id, shared=True)
 
     await callback_query.message.delete()
 
@@ -268,16 +297,8 @@ async def approve_join_request(client, message: ChatJoinRequest):
     user_id = message.from_user.id
     try:
         await client.approve_chat_join_request(chat_id=message.chat.id, user_id=user_id)
-        if user_id not in users_db:
-             users_db[user_id] = {
-                 "joined": True,
-                 "shared": False,
-                 "uploads": 0,
-                 "name": message.from_user.first_name or message.from_user.username
-             }
-        else:
-            users_db[user_id]["joined"] = True
-
+        await add_user(user_id, message.from_user.first_name)
+        await update_user_verification(user_id, joined=True)
         await client.send_message(user_id, "✅ **Request Approved!** Type /start.")
     except Exception as e:
         print(f"Error approving: {e}")
@@ -295,7 +316,9 @@ async def admin_panel_cb(client, callback_query):
 
 async def admin_panel_logic(client, message, is_edit):
     text = "👮‍♂️ **Admin Panel**\n\n"
-    text += f"👥 **Active Users:** {len(users_db)}\n"
+
+    all_users = await get_all_users()
+    text += f"👥 **Total Users:** {len(all_users)}\n"
 
     total_tasks = 0
     for tasks in ongoing_tasks.values():
@@ -303,11 +326,17 @@ async def admin_panel_logic(client, message, is_edit):
 
     text += f"📥 **Global Active Tasks:** {total_tasks}\n\n"
     text += "**📋 Recent Users:**\n"
-    for uid, data in list(users_db.items())[-20:]: # Show last 20
+    for data in all_users[-10:]: # Show last 10
          text += f"👤 {data['name']} (Uploads: {data.get('uploads', 0)})\n"
 
+    # Awake Status
+    status_icon = "🟢" if BOT_IS_AWAKE else "🔴"
+    status_text = "Awake" if BOT_IS_AWAKE else "Sleeping"
+
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 View All Active Downloads", callback_data="admin_downloads")]
+        [InlineKeyboardButton("📊 Active Downloads", callback_data="admin_downloads"),
+         InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(f"{status_icon} Bot: {status_text} (Click to Toggle)", callback_data="toggle_sleep")]
     ])
 
     if is_edit:
@@ -323,7 +352,8 @@ async def admin_downloads_callback(client, callback_query):
     has_tasks = False
     for uid, tasks in ongoing_tasks.items():
         if tasks:
-             user_name = users_db.get(uid, {}).get('name', 'Unknown')
+             user_data = await get_user(uid)
+             user_name = user_data.get('name', 'Unknown') if user_data else 'Unknown'
              text += f"👤 **{user_name}:**\n"
              for tid, tdata in tasks.items():
                  text += f" - {tdata.get('title', 'Unknown')} [{tdata.get('status', 'Init')}]\n"
@@ -333,6 +363,69 @@ async def admin_downloads_callback(client, callback_query):
         text += "✅ No active downloads."
 
     await callback_query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel_cb")]]))
+
+@app.on_callback_query(filters.regex("toggle_sleep"))
+async def toggle_sleep_callback(client, callback_query):
+    if callback_query.from_user.id != ADMIN_ID:
+        return
+
+    global BOT_IS_AWAKE
+    BOT_IS_AWAKE = not BOT_IS_AWAKE
+
+    # Refresh Admin Panel
+    await admin_panel_logic(client, callback_query.message, is_edit=True)
+    await callback_query.answer(f"Bot is now {'Awake' if BOT_IS_AWAKE else 'Sleeping'}")
+
+@app.on_callback_query(filters.regex("admin_broadcast"))
+async def admin_broadcast_callback(client, callback_query):
+    if callback_query.from_user.id != ADMIN_ID:
+        return
+
+    global BROADCAST_WAIT_MODE
+    BROADCAST_WAIT_MODE = True
+
+    await callback_query.message.edit_text(
+        "📢 **Broadcast Mode**\n\n"
+        "Send me the message you want to broadcast (Text, Photo, Video, etc.).\n"
+        "It will be sent to ALL users in the database.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="admin_panel_cb")]])
+    )
+
+@app.on_message(filters.user(ADMIN_ID) & filters.incoming)
+async def admin_broadcast_listener(client, message):
+    global BROADCAST_WAIT_MODE
+    if not BROADCAST_WAIT_MODE:
+        message.continue_propagation()
+        return
+
+    # Ignore commands
+    if message.text and message.text.startswith("/"):
+        message.continue_propagation()
+        return
+
+    BROADCAST_WAIT_MODE = False
+    status_msg = await message.reply_text("📢 **Broadcasting...**")
+
+    users = await get_all_users()
+    count = 0
+    failed = 0
+
+    for u in users:
+        try:
+            await message.copy(chat_id=u['user_id'])
+            count += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+            pass
+
+    await status_msg.edit_text(
+        f"✅ **Broadcast Complete!**\n\n"
+        f"👥 Sent: {count}\n"
+        f"❌ Failed: {failed}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Admin Panel", callback_data="admin_panel_cb")]])
+    )
+    message.stop_propagation()
 
 @app.on_callback_query(filters.regex("my_tasks"))
 async def my_tasks_callback(client, callback_query):
@@ -411,10 +504,24 @@ async def download_handler(client, message):
     if not url.startswith(("http", "www")):
         return 
 
+    # SLEEP CHECK
+    if not BOT_IS_AWAKE and user_id != ADMIN_ID:
+        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
+        await message.reply_text(
+            "😴 **Bot is sleeping? No problem**\n\n"
+            "The bot is currently resting. Click the button below to wake it up!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
+            ])
+        )
+        return
+
+    # Check Verification using DB
+    user_data = await get_user(user_id)
     if user_id != ADMIN_ID:
-        if user_id not in users_db or not users_db[user_id].get("joined") or not users_db[user_id].get("shared"):
-            await message.reply_text("⚠️ **Access Denied!** Please /start to verify.")
-            return
+        if not user_data or not user_data.get("joined") or not user_data.get("shared"):
+             await message.reply_text("⚠️ **Access Denied!** Please /start to verify.")
+             return
 
     if user_id not in ongoing_tasks:
         ongoing_tasks[user_id] = {}
@@ -587,6 +694,32 @@ async def start_bot():
         # Note: If this fails, the bot might not be admin or the ID is wrong.
 
     print("Bot Started!")
+
+    # --- BROADCAST SLEEP MESSAGE ON STARTUP ---
+    try:
+        print("Broadcasting Sleep Message to all users...")
+        users = await get_all_users()
+        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
+        count = 0
+        for u in users:
+            try:
+                await app.send_message(
+                    chat_id=u['user_id'],
+                    text="😴 **Bot is sleeping? No problem**\n\n"
+                         "The bot was just restarted and is currently resting.\n"
+                         "Click the button below to wake it up!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
+                    ])
+                )
+                count += 1
+                await asyncio.sleep(0.05) # Rate limit
+            except Exception:
+                pass
+        print(f"Broadcast sent to {count} users.")
+    except Exception as e:
+        print(f"Broadcast failed: {e}")
+
     await idle()
     await app.stop()
 
