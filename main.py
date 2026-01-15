@@ -1,18 +1,26 @@
 import os
 import time
-import math
 import logging
+import asyncio
+import shutil
+
+# --- FIX FOR PYTHON 3.10+ CRASH (VERY IMPORTANT) ---
+# Ye code start hone se pehle Event Loop create karega
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+# ---------------------------------------------------
+
 from pyrogram import Client, filters
 import yt_dlp
 
-# --- CONFIGURATION (Heroku Env Vars se lega) ---
-# Inhe directly code me mat likhna agar repo public ho, 
-# lekin private use ke liye yaha string me daal sakte ho ya Heroku Config Vars use karo.
-API_ID = int(os.environ.get("API_ID", 123456))  # Apna API ID yahan default me daal sakte ho
-API_HASH = os.environ.get("API_HASH", "YOUR_API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
+# --- CONFIGURATION (Heroku Config Vars) ---
+API_ID = int(os.environ.get("API_ID", 12345))
+API_HASH = os.environ.get("API_HASH", "YOUR_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN")
 
-# Logging setup (Debugging ke liye)
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -22,20 +30,17 @@ app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 async def progress(current, total, message):
     try:
         now = time.time()
-        # Update progress every 5 seconds only to avoid floodwait
+        # Progress bar state maintain karne ke liye
         if 'last_update_time' not in progress.__dict__:
             progress.last_update_time = 0
         
+        # 5 second ka gap taaki FloodWait na aaye
         if now - progress.last_update_time < 5 and current != total:
             return
 
         progress.last_update_time = now
         percentage = current * 100 / total
-        speed = current / (now - progress.start_time) if now - progress.start_time > 0 else 0
-        elapsed_time = int(now - progress.start_time)
-        eta = int((total - current) / speed) if speed > 0 else 0
         
-        # Human readable file sizes
         def humanbytes(b):
             if not b: return ""
             power = 1024
@@ -46,119 +51,121 @@ async def progress(current, total, message):
                 n += 1
             return str(round(b, 2)) + " " + dic_powerN[n] + 'B'
 
-        text = f"**Uploading...**\n"
+        text = f"**🚀 Uploading...**\n"
         text += f"📊 Progress: {round(percentage, 2)}%\n"
-        text += f"📦 Completed: {humanbytes(current)} / {humanbytes(total)}\n"
-        text += f"🚀 Speed: {humanbytes(speed)}/s\n"
-        text += f"⏳ ETA: {eta} sec"
+        text += f"📦 Size: {humanbytes(current)} / {humanbytes(total)}"
         
         await message.edit_text(text)
-    except Exception as e:
-        pass # Ignore minor edit errors
+    except Exception:
+        pass
 
-# --- DOWNLOAD LOGIC ---
+# --- START COMMAND ---
 @app.on_message(filters.command("start"))
 async def start(client, message):
-    await message.reply_text("👋 Hello! Send me any xHamster video link.\nI will download it using your custom cookies.")
+    await message.reply_text("👋 **Bot Online!**\nSend me any xHamster link to download.")
 
+# --- DOWNLOAD LOGIC ---
 @app.on_message(filters.text & ~filters.command("start"))
-async def download_video(client, message):
+async def download_handler(client, message):
     url = message.text.strip()
     
-    # Check if text looks like a URL
+    # Check if text is a link
     if not url.startswith(("http", "www")):
-        await message.reply_text("❌ Please send a valid URL.")
-        return
+        return 
 
-    msg = await message.reply_text("🔎 **Checking URL and extracting metadata...**")
+    status_msg = await message.reply_text("🔎 **Analyzing Link...**")
     
-    # Temporary directory for downloads
-    download_path = "downloads"
+    # Create unique folder for each task
+    timestamp = int(time.time())
+    download_path = f"downloads/{timestamp}"
     if not os.path.exists(download_path):
         os.makedirs(download_path)
 
-    # Output template (title + extension)
     out_tmpl = f'{download_path}/%(title)s.%(ext)s'
 
-    # yt-dlp Options
+    # yt-dlp Configuration
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', # Try best MP4 first
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': out_tmpl,
-        'cookiefile': 'cookies.txt', # Using your provided cookies
-        'writethumbnail': True,      # Download thumbnail
+        'cookiefile': 'cookies.txt', # Cookies ka use karega
+        'writethumbnail': True,
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
-        'restrictfilenames': True,   # Remove special chars from filename
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', # Fake User Agent
+        'geo_bypass': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36',
     }
 
+    filename = None
+    thumb_path = None
+
     try:
-        # Step 1: Extract Info (JSON) without downloading to check size
+        # Step 1: Check Metadata & Size
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            await msg.edit_text("⏳ **Fetching video info...**")
-            info_dict = ydl.extract_info(url, download=False)
+            await status_msg.edit_text("⏳ **Fetching Info...**")
+            info = ydl.extract_info(url, download=False)
             
-            # Check File Size (Max 2GB for Telegram Bot API limitations usually, but Pyrogram can do 2GB)
-            # 2GB = 2 * 1024 * 1024 * 1024 bytes approx 2147483648
-            filesize = info_dict.get('filesize') or info_dict.get('filesize_approx')
-            
-            if filesize and filesize > 2100000000: # ~1.95 GB limit margin
-                await msg.edit_text(f"❌ **File too large!**\nSize: {filesize / (1024*1024)} MB.\nTelegram limit is 2GB.")
+            # 2GB Limit Check (Telegram Limit)
+            filesize = info.get('filesize') or info.get('filesize_approx')
+            if filesize and filesize > 2000000000:
+                await status_msg.edit_text(f"❌ **File too big!**\nSize > 2GB. Cannot upload.")
+                # Cleanup folder
+                shutil.rmtree(download_path, ignore_errors=True)
                 return
+
+            title = info.get('title', 'Video')
+            duration = info.get('duration', 0)
             
-            title = info_dict.get('title', 'Video')
-            duration = info_dict.get('duration', 0)
-            
-            await msg.edit_text(f"📥 **Downloading:** `{title}`\n\nPlease wait, this depends on server speed...")
-            
-            # Step 2: Real Download
+            # Step 2: Download
+            await status_msg.edit_text(f"⬇️ **Downloading:** `{title}`\nPlease wait...")
             error_code = ydl.download([url])
             
             if error_code != 0:
-                raise Exception("Download failed with error code.")
+                raise Exception("Download failed.")
 
-            # Find the downloaded file
-            info_dict = ydl.extract_info(url, download=False) # Re-extract to get final filename
-            filename = ydl.prepare_filename(info_dict)
+            # Get actual filename
+            info = ydl.extract_info(url, download=False)
+            filename = ydl.prepare_filename(info)
             
-            # Thumbnails handling
-            thumb_path = filename.rsplit(".", 1)[0] + ".webp"
-            if not os.path.exists(thumb_path):
-                 thumb_path = filename.rsplit(".", 1)[0] + ".jpg"
-            if not os.path.exists(thumb_path):
-                thumb_path = None
+            # Find Thumbnail
+            base_name = filename.rsplit(".", 1)[0]
+            if os.path.exists(base_name + ".webp"):
+                thumb_path = base_name + ".webp"
+            elif os.path.exists(base_name + ".jpg"):
+                thumb_path = base_name + ".jpg"
 
     except Exception as e:
-        await msg.edit_text(f"❌ **Error:** {str(e)}")
+        await status_msg.edit_text(f"❌ **Error:** {str(e)}")
+        shutil.rmtree(download_path, ignore_errors=True)
         return
 
-    # --- UPLOAD LOGIC ---
+    # Step 3: Upload
     try:
+        await status_msg.edit_text("📤 **Uploading to Telegram...**")
         progress.start_time = time.time()
-        await msg.edit_text("📤 **Uploading to Telegram...**")
         
-        # Send Video
         await client.send_video(
             chat_id=message.chat.id,
             video=filename,
-            caption=f"🎥 **{title}**\n\n✅ Downloaded via Bot",
+            caption=f"🎥 **{title}**\n✅ Downloaded via Bot",
             duration=duration,
             thumb=thumb_path,
             supports_streaming=True,
             progress=progress,
-            progress_args=(msg,)
+            progress_args=(status_msg,)
         )
-        
-        await msg.delete() # Delete "Uploading" message after success
-        
+        await status_msg.delete()
+
     except Exception as e:
-        await msg.edit_text(f"❌ **Upload Failed:** {str(e)}")
-    
+        await status_msg.edit_text(f"❌ **Upload Failed:** {str(e)}")
+
     finally:
-        # --- CLEANUP (Space free karna bahut zaruri hai Heroku pe) ---
-        if 'filename' in locals() and os.path.exists(filename):
-            os.remove(filename)
-        if 'thumb_path' in locals() and thumb_path and os.path.exists(thumb_path):
-            os.remove(thumb_path)
-  
+        # Step 4: Cleanup (Delete folder)
+        if os.path.exists(download_path):
+            shutil.rmtree(download_path, ignore_errors=True)
+
+# --- ENTRY POINT (Ye bot ko start rakhega) ---
+if __name__ == "__main__":
+    print("Bot Started Successfully!")
+    app.run()
+        
