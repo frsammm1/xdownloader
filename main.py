@@ -322,22 +322,8 @@ async def start_command(client, message):
     # Initialize user in DB on start
     await add_user(user_id, first_name)
 
-    # SLEEP CHECK
-    if not BOT_IS_AWAKE and user_id != ADMIN_ID:
-        await message.reply_text(
-            "😴 **Bot is sleeping! No worries.**\n\n"
-            "The bot is currently resting. Click the button below to ask the admin to wake it up!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔔 Ask admin to awake", callback_data="ask_awake")]
-            ])
-        )
-        # Even if sleeping, we might want to show menu?
-        # User said "/start karne pe bot, instructions msg (start me) dega"
-        # But also "agar bot sleep me hai to bolega awake karwane ke liye"
-        # I will show the sleep message. If awake, show menu WITHOUT verification check.
-        return
-
     # ALWAYS show menu on /start, do NOT check verification here.
+    # Sleep check is only for downloading links, as requested.
     await show_main_menu(client, message.chat.id, user_id)
 
 @app.on_callback_query(filters.regex("ask_awake"))
