@@ -185,14 +185,17 @@ async def show_main_menu(client, chat_id, user_id):
     if user_id == ADMIN_ID:
         buttons.append([InlineKeyboardButton("👮‍♂️ Admin Panel", callback_data="admin_panel_cb")])
 
-    buttons.append([InlineKeyboardButton("📊 My Active Tasks", callback_data="my_tasks")])
+    # Removed "My Active Tasks" button as requested
 
     await client.send_message(
         chat_id=chat_id,
         text="👋 **Welcome Back!**\n\n"
         "✅ **You have unlimited access.**\n"
         "🔗 **Supported websites:** xvideos, xHamster, p0rnhub, xnxx, local p0rn websites and thousands of websites.\n\n"
-        "👇 Send me a link to start downloading!",
+        "**Commands:**\n"
+        "/active_task - View progress\n"
+        "/cancel or /stop - Cancel downloads\n\n"
+        "**Just Send a PORN LINK directly to the BOT**",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -249,6 +252,31 @@ async def check_user_access(client, message, user_id, user_name):
     return True
 
 # --- HANDLERS ---
+
+@app.on_message(filters.command(["active_task", "status"]))
+async def active_task_command(client, message):
+    # Trigger existing callback logic manually
+    # We create a dummy callback query object or just reuse the logic.
+    # Reusing logic is cleaner.
+    user_id = message.from_user.id
+    tasks = ongoing_tasks.get(user_id, {})
+
+    text = "📊 **My Active Tasks**\n\n"
+    if not tasks:
+        text += "✅ No active downloads/uploads."
+    else:
+        for tid, tdata in tasks.items():
+            text += f"🎥 **{tdata.get('title', 'Video')}**\n"
+            text += f"   Status: {tdata.get('status', 'Waiting')}\n"
+            text += f"   Progress: {tdata.get('progress', '0%')} | Speed: {tdata.get('speed', '0B/s')}\n\n"
+
+    # For command, we send a new message instead of editing
+    await message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data="my_tasks")]
+        ])
+    )
 
 @app.on_message(filters.command(["stop", "cancel"]))
 async def cancel_command(client, message):
