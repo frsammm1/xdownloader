@@ -187,6 +187,8 @@ async def show_main_menu(client, chat_id, user_id):
 
     # Removed "My Active Tasks" button as requested
 
+    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+
     await client.send_message(
         chat_id=chat_id,
         text=(
@@ -199,7 +201,7 @@ async def show_main_menu(client, chat_id, user_id):
             "/active_task check all active task\n\n"
             "**`Send any P*rn link directly to the bot`**"
         ),
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=reply_markup
     )
 
 async def check_user_access(client, message, user_id, user_name):
@@ -325,6 +327,9 @@ async def start_command(client, message):
     # ALWAYS show menu on /start, do NOT check verification here.
     # Sleep check is only for downloading links, as requested.
     await show_main_menu(client, message.chat.id, user_id)
+
+    # Check verification (Prompts if needed)
+    await check_user_access(client, message, user_id, first_name)
 
 @app.on_callback_query(filters.regex("ask_awake"))
 async def ask_awake_callback(client, callback_query):
