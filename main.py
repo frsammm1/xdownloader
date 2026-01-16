@@ -91,10 +91,17 @@ def fallback_scraper(url):
                 return mp4_match.group(0)
 
             # 5. Iframe fallback (Look for embed URL)
-            iframe = soup.find('iframe')
-            if iframe and iframe.get('src'):
-                # Return iframe src to be fed back into yt-dlp (it handles many embeds)
-                return iframe.get('src')
+            iframes = soup.find_all('iframe')
+            for iframe in iframes:
+                src = iframe.get('src')
+                if src:
+                    # Handle protocol-relative URLs
+                    if src.startswith('//'):
+                        src = "https:" + src
+
+                    # Return if it looks like an embed or video player
+                    if "embed" in src or "player" in src or "masawatch" in src or "video" in src:
+                        return src
 
     except Exception as e:
         print(f"Scraper Error: {e}")
@@ -184,7 +191,7 @@ async def show_main_menu(client, chat_id, user_id):
         chat_id=chat_id,
         text="👋 **Welcome Back!**\n\n"
         "✅ **You have unlimited access.**\n"
-        "🔗 **Supported Sites:** xHamster & Pornhub.\n\n"
+        "🔗 **Supported websites:** xvideos, xHamster, p0rnhub, xnxx, local p0rn websites and thousands of websites.\n\n"
         "👇 Send me a link to start downloading!",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -243,6 +250,39 @@ async def check_user_access(client, message, user_id, user_name):
 
 # --- HANDLERS ---
 
+@app.on_message(filters.command(["stop", "cancel"]))
+async def cancel_command(client, message):
+    user_id = message.from_user.id
+    tasks = ongoing_tasks.get(user_id, {})
+
+    if not tasks:
+        await message.reply_text("✅ No active tasks to cancel.")
+        return
+
+    text = "🛑 **Select a task to cancel:**\n"
+    buttons = []
+    for tid, tdata in tasks.items():
+        title = tdata.get("title", "Unknown Task")[:30]
+        buttons.append([InlineKeyboardButton(f"❌ {title}", callback_data=f"cancel_task_{tid}")])
+
+    await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_callback_query(filters.regex(r"^cancel_task_"))
+async def cancel_task_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    try:
+        task_id = float(callback_query.data.split("_")[2])
+        if user_id in ongoing_tasks and task_id in ongoing_tasks[user_id]:
+            # Mark status as cancelled to trigger hooks/loops
+            ongoing_tasks[user_id][task_id]['status'] = "Cancelled"
+            await callback_query.answer("🛑 Task Cancelled!")
+            await callback_query.message.edit_text(f"❌ **Task Cancelled.**")
+        else:
+            await callback_query.answer("⚠️ Task not found or already completed.", show_alert=True)
+            await callback_query.message.delete()
+    except Exception as e:
+        print(f"Cancel Error: {e}")
+
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
     user_id = message.from_user.id
@@ -250,18 +290,33 @@ async def start_command(client, message):
 
     # SLEEP CHECK
     if not BOT_IS_AWAKE and user_id != ADMIN_ID:
-        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
         await message.reply_text(
-            "😴 **Bot is sleeping? No problem**\n\n"
-            "The bot is currently resting. Click the button below to wake it up!",
+            "😴 **Bot is sleeping! No worries.**\n\n"
+            "The bot is currently resting. Click the button below to ask the admin to wake it up!",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
+                [InlineKeyboardButton("🔔 Ask admin to awake", callback_data="ask_awake")]
             ])
         )
         return
 
     if await check_user_access(client, message, user_id, first_name):
         await show_main_menu(client, message.chat.id, user_id)
+
+@app.on_callback_query(filters.regex("ask_awake"))
+async def ask_awake_callback(client, callback_query):
+    user = callback_query.from_user
+    try:
+        await client.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔔 **Wake Request**\n\n"
+                 f"👤 **User:** {user.mention}\n"
+                 f"🆔 `{user.id}`\n\n"
+                 f"This user is asking to wake the bot!"
+        )
+        await callback_query.answer("✅ Request sent to Admin!", show_alert=True)
+    except Exception as e:
+        await callback_query.answer("❌ Failed to contact Admin.", show_alert=True)
+        print(f"Wake Request Error: {e}")
 
 @app.on_callback_query(filters.regex("check_join_status"))
 async def check_join_status(client, callback_query):
@@ -376,6 +431,27 @@ async def toggle_sleep_callback(client, callback_query):
     await admin_panel_logic(client, callback_query.message, is_edit=True)
     await callback_query.answer(f"Bot is now {'Awake' if BOT_IS_AWAKE else 'Sleeping'}")
 
+    # BROADCAST ON AWAKE
+    if BOT_IS_AWAKE:
+        asyncio.create_task(broadcast_awake_msg(client))
+
+async def broadcast_awake_msg(client):
+    try:
+        users = await get_all_users()
+        msg_text = "🔔 **Bot is Awakened!**\n\nDownload hot videos now... 🔥"
+
+        count = 0
+        for u in users:
+            try:
+                await client.send_message(chat_id=u['user_id'], text=msg_text)
+                count += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                pass
+        print(f"Awake Broadcast sent to {count} users.")
+    except Exception as e:
+        print(f"Awake Broadcast Error: {e}")
+
 @app.on_callback_query(filters.regex("admin_broadcast"))
 async def admin_broadcast_callback(client, callback_query):
     if callback_query.from_user.id != ADMIN_ID:
@@ -460,6 +536,10 @@ async def back_to_start(client, callback_query):
 def run_download(url, path, task_info_dict, generic_mode=False):
 
     def progress_hook(d):
+        # CHECK CANCELLATION
+        if task_info_dict.get('status') == "Cancelled":
+            raise Exception("Cancelled by User")
+
         if d['status'] == 'downloading':
             task_info_dict['status'] = "Downloading"
             task_info_dict['progress'] = d.get('_percent_str', '0%')
@@ -506,12 +586,11 @@ async def download_handler(client, message):
 
     # SLEEP CHECK
     if not BOT_IS_AWAKE and user_id != ADMIN_ID:
-        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
         await message.reply_text(
-            "😴 **Bot is sleeping? No problem**\n\n"
-            "The bot is currently resting. Click the button below to wake it up!",
+            "😴 **Bot is sleeping! No worries.**\n\n"
+            "The bot is currently resting. Click the button below to ask the admin to wake it up!",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
+                [InlineKeyboardButton("🔔 Ask admin to awake", callback_data="ask_awake")]
             ])
         )
         return
@@ -627,6 +706,16 @@ async def download_handler(client, message):
                     thumb_path = img
                     break
 
+        # GENERATE THUMBNAIL IF MISSING
+        if not thumb_path and filename and os.path.exists(filename):
+             thumb_path = os.path.join(download_path, "thumb_gen.jpg")
+             try:
+                 # Extract frame at 1s
+                 subprocess.check_call(['ffmpeg', '-y', '-i', filename, '-ss', '00:00:01', '-vframes', '1', thumb_path], stderr=subprocess.DEVNULL)
+             except Exception as e_thumb:
+                 print(f"Thumbnail Gen Error: {e_thumb}")
+                 thumb_path = None
+
         await status_msg.edit_text("📤 **Uploading...**")
         
         caption_text = f"🎥 **{title}**\n\n"
@@ -694,31 +783,6 @@ async def start_bot():
         # Note: If this fails, the bot might not be admin or the ID is wrong.
 
     print("Bot Started!")
-
-    # --- BROADCAST SLEEP MESSAGE ON STARTUP ---
-    try:
-        print("Broadcasting Sleep Message to all users...")
-        users = await get_all_users()
-        wake_up_url = f"https://t.me/fr_sammm11?text=hy+buddy+awake+the+bot"
-        count = 0
-        for u in users:
-            try:
-                await app.send_message(
-                    chat_id=u['user_id'],
-                    text="😴 **Bot is sleeping? No problem**\n\n"
-                         "The bot was just restarted and is currently resting.\n"
-                         "Click the button below to wake it up!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔔 Wake Up Bot", url=wake_up_url)]
-                    ])
-                )
-                count += 1
-                await asyncio.sleep(0.05) # Rate limit
-            except Exception:
-                pass
-        print(f"Broadcast sent to {count} users.")
-    except Exception as e:
-        print(f"Broadcast failed: {e}")
 
     await idle()
     await app.stop()
