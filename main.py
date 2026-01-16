@@ -185,17 +185,15 @@ async def show_main_menu(client, chat_id, user_id):
     if user_id == ADMIN_ID:
         buttons.append([InlineKeyboardButton("👮‍♂️ Admin Panel", callback_data="admin_panel_cb")])
 
-    # Removed "My Active Tasks" button as requested
+    buttons.append([InlineKeyboardButton("📊 My Active Tasks", callback_data="my_tasks")])
 
     await client.send_message(
         chat_id=chat_id,
         text="👋 **Welcome Back!**\n\n"
         "✅ **You have unlimited access.**\n"
         "🔗 **Supported websites:** xvideos, xHamster, p0rnhub, xnxx, local p0rn websites and thousands of websites.\n\n"
-        "**Commands:**\n"
-        "/active_task - View progress\n"
-        "/cancel or /stop - Cancel downloads\n\n"
-        "**Just Send a PORN LINK directly to the BOT**",
+        "**Just Send a PORN LINK directly to the BOT**\n\n"
+        "👉 You can also use /active_task, /cancel or /stop.",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
