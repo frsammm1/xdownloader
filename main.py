@@ -189,13 +189,16 @@ async def show_main_menu(client, chat_id, user_id):
 
     await client.send_message(
         chat_id=chat_id,
-        text="👋 **Welcome Back!**\n\n"
-        "✅ **You have unlimited access.**\n"
-        "🔗 **Supported websites:** xvideos, xHamster, p0rnhub, xnxx, local p0rn websites and thousands of websites.\n\n"
-        "**Commands:**\n"
-        "/active_task - View progress\n"
-        "/cancel or /stop - Cancel downloads\n\n"
-        "**Just Send a PORN LINK directly to the BOT**",
+        text=(
+            "👋 **Hy I'm powerful p0rn video downloader bot**\n"
+            "You can download unlimited p0rn videos in this bot\n"
+            "Just send me any P0rn links \n"
+            "Supported websites: most p0rn websites available on internet (if not downloads try another website)\n"
+            "/start Start the bot\n"
+            "/cancel /stop cancel any active task\n"
+            "/active_task check all active task\n\n"
+            "**`Send any P*rn link directly to the bot`**"
+        ),
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -316,6 +319,9 @@ async def start_command(client, message):
     user_id = message.from_user.id
     first_name = message.from_user.first_name or "User"
 
+    # Initialize user in DB on start
+    await add_user(user_id, first_name)
+
     # SLEEP CHECK
     if not BOT_IS_AWAKE and user_id != ADMIN_ID:
         await message.reply_text(
@@ -325,10 +331,14 @@ async def start_command(client, message):
                 [InlineKeyboardButton("🔔 Ask admin to awake", callback_data="ask_awake")]
             ])
         )
+        # Even if sleeping, we might want to show menu?
+        # User said "/start karne pe bot, instructions msg (start me) dega"
+        # But also "agar bot sleep me hai to bolega awake karwane ke liye"
+        # I will show the sleep message. If awake, show menu WITHOUT verification check.
         return
 
-    if await check_user_access(client, message, user_id, first_name):
-        await show_main_menu(client, message.chat.id, user_id)
+    # ALWAYS show menu on /start, do NOT check verification here.
+    await show_main_menu(client, message.chat.id, user_id)
 
 @app.on_callback_query(filters.regex("ask_awake"))
 async def ask_awake_callback(client, callback_query):
@@ -772,8 +782,7 @@ async def download_handler(client, message):
         except Exception as e_log:
              print(f"Log Error: {e_log}")
 
-        if user_id in users_db:
-             users_db[user_id]["uploads"] = users_db[user_id].get("uploads", 0) + 1
+        await increment_upload_count(user_id)
 
     except Exception as e:
         monitor_running = False
